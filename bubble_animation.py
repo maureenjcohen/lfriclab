@@ -8,6 +8,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from matplotlib.colors import TwoSlopeNorm
+from config import savedir
 
 # %%
 ## Constants of the slice configuration, mirroring its &planet and
@@ -191,7 +192,7 @@ class LFRicSlice:
 # %%
 def bubble_animation(plobjects, anomaly=True, trange=(0, None), levels=None,
                      interval=150, save=False, saveformat='gif',
-                     savepath='outputs', savename='bubble_animation.gif'):
+                     savepath=savedir, savename='bubble_animation.gif'):
 
     """ Input: list of two LFRicSlice objects, e.g. the hot bubble with the
         variable_cp switch off and on
@@ -286,10 +287,8 @@ def bubble_animation(plobjects, anomaly=True, trange=(0, None), levels=None,
     return ani
 
 # %%
-if __name__ == '__main__':
-    from config import savedir
-    hot_off = LFRicSlice(slicedict, 'lfric', 'hot_off')
-    hot_off.load_file('data/slice_test/lfric_diag_hot_off.nc')
-    hot_on = LFRicSlice(slicedict, 'lfric', 'hot_on')
-    hot_on.load_file('data/slice_test/lfric_diag_hot_on.nc')
-    bubble_animation([hot_off, hot_on], save=True, savepath=savedir)
+# hot_off = LFRicSlice(slicedict, 'lfric', 'hot_off')
+# hot_off.load_file('data/slice_test/lfric_diag_hot_off.nc')
+# hot_on = LFRicSlice(slicedict, 'lfric', 'hot_on')
+# hot_on.load_file('data/slice_test/lfric_diag_hot_on.nc')
+# bubble_animation([hot_off, hot_on], save=True, savepath=savedir)

@@ -8,6 +8,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import TwoSlopeNorm
 from lfric_wp1_diag import calc_temperature, calc_static_stability
+from config import savedir
 
 # %%
 ## Definition of LFRic-Venus model constants
@@ -286,7 +287,7 @@ class LFRicPlanet:
 
 # %%
 def zmzw_and_am(plobject, meaning=True, trange=(0, None), time_slice=-1,
-                nbins=None, plot=True,
+                nbins=None, plot=True, savepath=savedir,
                 save=False, saveformat='png', savename='zmzw_and_am.png'):
 
     """ Input: LFRicPlanet object holding LFRic UGRID output
@@ -338,7 +339,7 @@ def zmzw_and_am(plobject, meaning=True, trange=(0, None), time_slice=-1,
     fig.tight_layout()
 
     if save is True:
-        plt.savefig(savename, format=saveformat, bbox_inches='tight')
+        plt.savefig(os.path.join(savepath, savename), format=saveformat, bbox_inches='tight')
         plt.close()
     else:
         plt.show()
@@ -346,7 +347,7 @@ def zmzw_and_am(plobject, meaning=True, trange=(0, None), time_slice=-1,
 # %%
 def atmosphere_state(plobject, meaning=True, trange=(0, None), time_slice=-1,
                      nbins=None, constant_cp=False, plot=True,
-                     save=False, saveformat='png', savepath='outputs',
+                     save=False, saveformat='png', savepath=savedir,
                      savename='atmosphere_state.png'):
 
     """ Input: LFRicPlanet object holding LFRic UGRID output
