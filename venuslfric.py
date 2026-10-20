@@ -2,10 +2,12 @@
 
 # %%
 ## Import packages
+import os
 import xarray as xr
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import TwoSlopeNorm
+from lfric_wp1_diag import calc_temperature, calc_static_stability
 
 # %%
 ## Definition of LFRic-Venus model constants
@@ -337,6 +339,145 @@ def zmzw_and_am(plobject, meaning=True, trange=(0, None), time_slice=-1,
 
     if save is True:
         plt.savefig(savename, format=saveformat, bbox_inches='tight')
+        plt.close()
+    else:
+        plt.show()
+
+# %%
+def atmosphere_state(plobject, meaning=True, trange=(0, None), time_slice=-1,
+                     nbins=None, constant_cp=False, plot=True,
+                     save=False, saveformat='png', savepath='outputs',
+                     savename='atmosphere_state.png'):
+
+    """ Input: LFRicPlanet object holding LFRic UGRID output
+        Output: four-panel figure of the state of the atmosphere: zonal mean
+        zonal wind, mean meridional mass streamfunction, and global
+        area-weighted mean profiles of temperature and static stability
+
+        meaning (default True) time-means every panel over trange
+        time_slice (default -1) selects the time if meaning=False
+        nbins (default None) sets the number of latitude bands, chosen from
+        the mesh size if not given
+        constant_cp (default False) evaluates the static stability with the
+        c_p(T) law; True uses the namelist cp of a constant heat capacity run
+        savepath (default outputs) is the directory the figure is written
+        to, created if missing
+
+        The streamfunction is psi = 2*pi*r*cos(lat) * integral from z to the
+        model top of [rho*v] dz, with r = radius + z. Positive values
+        circulate clockwise in the latitude-height plane, as in the northern
+        Hadley cell. """
+
+    if not hasattr(plobject, 'areas'):
+        plobject.set_resolution()
+
+    if meaning is True:
+        stop = plobject.time.size if trange[1] is None else trange[1]
+        indices = np.arange(trange[0], stop)
+    else:
+        indices = np.atleast_1d(np.arange(plobject.time.size)[time_slice])
+
+    ukey, vkey = plobject.key('u'), plobject.key('v')
+    weights = plobject.areas / np.sum(plobject.areas)
+    u_sum, rhov_sum, temp_sum, stab_sum = 0.0, 0.0, 0.0, 0.0
+    for i in indices:
+        u_field = plobject.data[ukey][i]
+        v_field = plobject.data[vkey][i]
+        u_face = (u_field.values if 'nMesh2d_face' in u_field.dims
+                  else plobject.edges_to_faces(u_field.values))
+        v_face = (v_field.values if 'nMesh2d_face' in v_field.dims
+                  else plobject.edges_to_faces(v_field.values))
+        u_sum = u_sum + u_face
+        # rho*v is meaned before the zonal mean so that eddy mass fluxes
+        # are kept in the streamfunction.
+        rhov_sum = rhov_sum + plobject.calc_density(int(i)) * v_face
+        temp_sum = temp_sum + np.sum(calc_temperature(plobject, int(i))
+                                     * weights[None, :], axis=1)
+        stab_sum = stab_sum + np.sum(
+            calc_static_stability(plobject, int(i), constant_cp)
+            * weights[None, :], axis=1)
+    nt = indices.size
+
+    # Zonal means are area-weighted, since cubed-sphere cells in one
+    # latitude band differ in size; this keeps the column mass budget
+    # closer to zero at the surface.
+    _, band_area = plobject.zonal_mean(plobject.areas, plobject.face_lats,
+                                       nbins)
+    lats, zmzw = plobject.zonal_mean(u_sum / nt * plobject.areas,
+                                     plobject.face_lats, nbins)
+    zmzw = zmzw / band_area
+    lats, zm_rhov = plobject.zonal_mean(rhov_sum / nt * plobject.areas,
+                                        plobject.face_lats, nbins)
+    zm_rhov = zm_rhov / band_area
+    temp_profile = temp_sum / nt
+    stab_profile = stab_sum / nt
+
+    # Integrate rho*v downward from the model top onto full levels.
+    column = np.cumsum(zm_rhov[::-1] * plobject.dz, axis=0)[::-1]
+    column = np.concatenate([column, np.zeros((1, lats.size))], axis=0)
+    radius = plobject.radius + plobject.z_full
+    psi = 2 * np.pi * radius[:, None] * np.cos(np.deg2rad(lats))[None, :] \
+        * column
+
+    if plot is not True:
+        return lats, zmzw, psi, temp_profile, stab_profile
+
+    days = plobject.time[indices] / 86400.0
+    if meaning is True:
+        when = f'mean over Earth days {days[0]:.0f} to {days[-1]:.0f}'
+    else:
+        when = f'Earth day {days[0]:.0f}'
+
+    fig, ax = plt.subplots(2, 2, figsize=(13, 10), layout='constrained')
+
+    # Symmetric whole-number levels, so equal colour intensity means equal
+    # speed in either direction. The step keeps about 20 levels.
+    step = max(1, np.ceil(np.nanmax(np.abs(zmzw)) / 10))
+    vmax = step * np.ceil(np.nanmax(np.abs(zmzw)) / step)
+    cf = ax[0, 0].contourf(lats, plobject.heights, zmzw,
+                           levels=np.arange(-vmax, vmax + step, step),
+                           cmap='RdBu_r', norm=TwoSlopeNorm(0))
+    ax[0, 0].set_title('Zonal mean zonal wind')
+    cbar = fig.colorbar(cf, ax=ax[0, 0])
+    cbar.ax.set_title('m/s')
+
+    psi_scaled = psi * 1e-10
+    step = max(1, np.ceil(np.nanmax(np.abs(psi_scaled)) / 10))
+    vmax = step * np.ceil(np.nanmax(np.abs(psi_scaled)) / step)
+    cf = ax[0, 1].contourf(lats, plobject.heights_full, psi_scaled,
+                           levels=np.arange(-vmax, vmax + step, step),
+                           cmap='RdBu_r', norm=TwoSlopeNorm(0))
+    ax[0, 1].set_title('Mean meridional mass streamfunction')
+    cbar = fig.colorbar(cf, ax=ax[0, 1])
+    cbar.ax.set_title('$10^{10}$ kg/s')
+
+    for a in ax[0]:
+        a.set_xlabel('Latitude [deg]')
+        a.set_ylabel('Height [km]')
+
+    ax[1, 0].plot(temp_profile, plobject.heights, color='k')
+    ax[1, 0].set_title('Global mean temperature')
+    ax[1, 0].set_xlabel('Temperature [K]')
+
+    if constant_cp is True:
+        adiabat = f'constant $c_p$ = {plobject.cp:.0f} J/kg/K'
+    else:
+        adiabat = '$c_p(T)$'
+    ax[1, 1].plot(stab_profile, plobject.heights_full[1:-1], color='k')
+    ax[1, 1].axvline(0.0, color='gray', linewidth=0.8, linestyle='--')
+    ax[1, 1].set_title(f'Global mean static stability, {adiabat}')
+    ax[1, 1].set_xlabel('$dT/dz + g/c_p$ [K/km]')
+
+    for a in ax[1]:
+        a.set_ylabel('Height [km]')
+        a.grid(alpha=0.5)
+
+    fig.suptitle(f'{plobject.name}, {plobject.run}, {when}')
+
+    if save is True:
+        os.makedirs(savepath, exist_ok=True)
+        plt.savefig(os.path.join(savepath, savename), format=saveformat,
+                    bbox_inches='tight')
         plt.close()
     else:
         plt.show()
