@@ -205,8 +205,8 @@ def bubble_animation(plobjects, anomaly=True, trange=(0, None), levels=None,
         levels (default None) sets the contour levels, chosen from the data
         range over all frames of both runs if not given
         saveformat 'gif' uses the pillow writer, 'mp4' needs ffmpeg
-        savepath (default outputs) is the directory the file is written to,
-        created if missing """
+        savepath (default SAVEDIR from .env) is the directory the file is
+        written to, created if missing """
 
     for plobject in plobjects:
         if not hasattr(plobject, 'grid_order'):

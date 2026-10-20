@@ -361,8 +361,8 @@ def atmosphere_state(plobject, meaning=True, trange=(0, None), time_slice=-1,
         the mesh size if not given
         constant_cp (default False) evaluates the static stability with the
         c_p(T) law; True uses the namelist cp of a constant heat capacity run
-        savepath (default outputs) is the directory the figure is written
-        to, created if missing
+        savepath (default SAVEDIR from .env) is the directory the figure is
+        written to, created if missing
 
         The streamfunction is psi = 2*pi*r*cos(lat) * integral from z to the
         model top of [rho*v] dz, with r = radius + z. Positive values
