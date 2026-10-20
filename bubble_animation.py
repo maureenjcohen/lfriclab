@@ -287,8 +287,9 @@ def bubble_animation(plobjects, anomaly=True, trange=(0, None), levels=None,
 
 # %%
 if __name__ == '__main__':
+    from config import savedir
     hot_off = LFRicSlice(slicedict, 'lfric', 'hot_off')
     hot_off.load_file('data/slice_test/lfric_diag_hot_off.nc')
     hot_on = LFRicSlice(slicedict, 'lfric', 'hot_on')
     hot_on.load_file('data/slice_test/lfric_diag_hot_on.nc')
-    bubble_animation([hot_off, hot_on], save=True, savepath='outputs')
+    bubble_animation([hot_off, hot_on], save=True, savepath=savedir)
