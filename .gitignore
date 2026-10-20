@@ -1,0 +1,7 @@
+*.png
+*.nc
+*.txt
+*.md
+*.jpg
+*.mp4
+__pycache__/
