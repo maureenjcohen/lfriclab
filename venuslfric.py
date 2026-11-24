@@ -543,17 +543,12 @@ def atmosphere_state(plobject, meaning=True, trange=(0, None), time_slice=-1,
         plt.show()
 
 # %%
-def spinup_index(rundir, nsegments=None, steps_per_day=16812,
-                 solar_day=1.00872e7, plot=True, save=False,
-                 saveformat='png', savepath=savedir, savename=None):
+def find_segments(rundir, nsegments=None, steps_per_day=16812):
 
-    """ Input: top-level directory of a chained run, e.g. forced_haus, whose
-        segment subdirectories are named <candidate>_<start day>_<end day>
-        and each hold one lfric_diag.nc
-        Output: two-panel figure after Lee et al. (2007), Fig. 3: globally
-        integrated superrotation index S above global total kinetic energy,
-        against time in Venus solar days
+    """ Lists the segments of a chained run to read, in time order.
 
+        rundir holds segment subdirectories named
+        <candidate>_<start day>_<end day>, each with one lfric_diag.nc.
         nsegments (default None) is the number of segments to read, counted
         from the first, between 1 and the number of segment directories.
         If None, every segment whose end-of-segment checkpoint exists and is
@@ -563,16 +558,11 @@ def spinup_index(rundir, nsegments=None, steps_per_day=16812,
         explicitly if checkpoints have been deleted.
         steps_per_day (default 16812, a Venus solar day at dt = 600 s) gives
         the step number of each segment's end checkpoint
-        solar_day (default 1.00872e7 s) converts model time to Venus days
 
-        Each segment is read on its own, so no file is held open beside the
-        others and the mesh variables are never concatenated along time.
-        The model time axis runs from the start of the chain, so segment
-        times are used as they are; a time that fails to increase across
-        segments, or a segment that does not start where the previous one
-        ended, raises an error.
+        A segment that does not start where the previous one ended raises
+        an error.
 
-        Returns (time in Venus days, S, KE in J). """
+        Returns a list of (start day, end day, path). """
 
     pattern = re.compile(r'^(.+)_(\d+)_(\d+)$')
     segments = []
@@ -613,6 +603,36 @@ def spinup_index(rundir, nsegments=None, steps_per_day=16812,
                              f'{previous[1]} but the next segment with '
                              f'lfric_diag.nc, {current[2]}, starts at day '
                              f'{current[0]}')
+
+    return segments
+
+
+# %%
+def spinup_index(rundir, nsegments=None, steps_per_day=16812,
+                 solar_day=1.00872e7, plot=True, save=False,
+                 saveformat='png', savepath=savedir, savename=None):
+
+    """ Input: top-level directory of a chained run, e.g. forced_haus, whose
+        segment subdirectories are named <candidate>_<start day>_<end day>
+        and each hold one lfric_diag.nc
+        Output: two-panel figure after Lee et al. (2007), Fig. 3: globally
+        integrated superrotation index S above global total kinetic energy,
+        against time in Venus solar days
+
+        nsegments (default None) and steps_per_day (default 16812) select
+        the segments to read, as in find_segments, which also stops at a gap
+        in the chain
+        solar_day (default 1.00872e7 s) converts model time to Venus days
+
+        Each segment is read on its own, so no file is held open beside the
+        others and the mesh variables are never concatenated along time.
+        The model time axis runs from the start of the chain, so segment
+        times are used as they are; a time that fails to increase across
+        segments raises an error.
+
+        Returns (time in Venus days, S, KE in J). """
+
+    segments = find_segments(rundir, nsegments, steps_per_day)
 
     run = os.path.basename(os.path.normpath(rundir))
     times, index, ke = [], [], []
@@ -670,5 +690,104 @@ def spinup_index(rundir, nsegments=None, steps_per_day=16812,
         plt.show()
 
     return days, index, ke
+
+# %%
+def zonal_wind_history(rundir, heights=(5, 15, 25, 35, 45, 55, 65, 75),
+                       latband=30.0, nsegments=None, steps_per_day=16812,
+                       solar_day=1.00872e7, plot=True, save=False,
+                       saveformat='png', savepath=savedir, savename=None):
+
+    """ Input: top-level directory of a chained run, e.g. forced_haus, as
+        for spinup_index
+        Output: one panel per height of the zonal mean zonal wind against
+        time in Venus solar days
+
+        heights (default 5 to 75 km in 10 km steps) are in km; each is
+        taken at the nearest model half level
+        latband (default 30) is the half-width in degrees of the band about
+        the equator over which the wind is averaged, weighted by cell area.
+        Because the zonal mean is a function of latitude, the band average
+        reduces it to one value per height and time.
+        nsegments and steps_per_day select the segments, as in
+        find_segments; solar_day converts model time to Venus days
+
+        Each panel has its own y-axis, so a wind of order 1 m/s in the deep
+        atmosphere shows its trend beside a jet of order 50 m/s. Eastward
+        wind has its physical sign; Venus superrotates retrograde, so
+        superrotation is negative.
+
+        Returns (time in Venus days, heights of the levels used in km,
+        band-mean wind in m/s with shape (time, height)). """
+
+    segments = find_segments(rundir, nsegments, steps_per_day)
+    run = os.path.basename(os.path.normpath(rundir))
+    times, winds = [], []
+    plobject = None
+    for start, end, path in segments:
+        print(f'Reading {path}')
+        if plobject is None:
+            plobject = LFRicPlanet(lfricdict, 'lfric', run)
+            plobject.load_file(os.path.join(path, 'lfric_diag.nc'))
+            plobject.set_resolution()
+            levels = np.array([np.argmin(np.abs(plobject.heights - h))
+                               for h in heights])
+            inband = np.abs(plobject.face_lats) <= latband
+            weights = np.where(inband, plobject.areas, 0.0)
+            weights = weights / weights.sum()
+        else:
+            plobject.data = xr.open_dataset(os.path.join(path, 'lfric_diag.nc'),
+                                            decode_cf=False)
+            plobject.time = plobject.data['time'].values
+        u_field = plobject.data[plobject.key('u')]
+        # Only the selected levels are read from the file.
+        u_sel = u_field[:, levels].values
+        if 'nMesh2d_face' not in u_field.dims:
+            u_sel = plobject.edges_to_faces(u_sel)
+        t = plobject.time
+        plobject.close()
+        if times and t[0] <= times[-1][-1]:
+            raise ValueError(f'Time in {path} does not follow on from the '
+                             f'previous segment')
+        times.append(t)
+        winds.append(np.sum(u_sel * weights, axis=-1))
+
+    days = np.concatenate(times) / solar_day
+    wind = np.concatenate(winds)
+    used = plobject.heights[levels]
+
+    if plot is not True:
+        return days, used, wind
+
+    ncol = 2
+    nrow = int(np.ceil(used.size / ncol))
+    fig, ax = plt.subplots(nrow, ncol, figsize=(11, 2.4 * nrow),
+                           sharex=True, layout='constrained', squeeze=False)
+    # Highest level in the top-left panel, so the grid reads top-down like
+    # the atmosphere.
+    order = np.argsort(used)[::-1]
+    for a, j in zip(ax.flat, order):
+        a.plot(days, wind[:, j], color='k', linewidth=1.5)
+        a.set_title(f'{used[j]:.2f} km')
+        a.set_ylabel('u [m/s]')
+        a.grid(alpha=0.5)
+        a.set_xlim(0, days[-1])
+    for a in ax.flat[used.size:]:
+        a.set_visible(False)
+    for a in ax[-1]:
+        a.set_xlabel('Time [Venus solar days]')
+    fig.suptitle(f'{plobject.name}, {run}: zonal mean zonal wind, '
+                 f'area mean over {latband:.0f}S to {latband:.0f}N')
+
+    if save is True:
+        if savename is None:
+            savename = f'zonal_wind_history_{run}.{saveformat}'
+        os.makedirs(savepath, exist_ok=True)
+        plt.savefig(os.path.join(savepath, savename), format=saveformat,
+                    bbox_inches='tight')
+        plt.close()
+    else:
+        plt.show()
+
+    return days, used, wind
 
 # %%
