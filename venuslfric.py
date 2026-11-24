@@ -3,6 +3,8 @@
 # %%
 ## Import packages
 import os
+import re
+import glob
 import xarray as xr
 import numpy as np
 import matplotlib.pyplot as plt
@@ -284,6 +286,54 @@ class LFRicPlanet:
         self.am_relative = am
         return self.am_time, self.am_relative
 
+    def calc_superrotation_ke(self, trange=(0, None)):
+        """ Calculates the globally integrated superrotation index and the
+        global total kinetic energy, as in Lee et al. (2007), Fig. 3.
+
+        S = M_r / M_omega (Read, 1986), where
+        M_r     = integral of u * r * cos(lat) dm, the wind angular momentum
+        M_omega = integral of omega * r**2 * cos(lat)**2 dm, the angular
+                  momentum of the same atmosphere at rest relative to the
+                  surface
+        with r = radius + z and dm = rho * area * dz. S = 0 for an atmosphere
+        at rest; the total angular momentum is (1 + S) times M_omega, so
+        1 + S is also the total angular momentum normalised to its value at
+        rest, as in Lebonnois et al. (2010), Fig. 1. Retrograde omega and
+        retrograde wind are both negative, so superrotation gives S > 0.
+
+        KE = integral of 0.5 * (u**2 + v**2) dm; vertical wind is omitted.
+
+        Returns (time in seconds, S, KE in J). """
+        if not hasattr(self, 'areas'):
+            self.set_resolution()
+
+        ukey, vkey = self.key('u'), self.key('v')
+        nt = self.data[ukey].shape[0]
+        stop = nt if trange[1] is None else trange[1]
+        indices = np.arange(trange[0], stop)
+
+        radius = self.radius + self.z_half
+        coslat = np.cos(np.deg2rad(self.face_lats))
+        arm = radius[:, None] * coslat[None, :]
+        volume = self.areas[None, :] * self.dz
+
+        index = np.zeros(indices.size)
+        ke = np.zeros(indices.size)
+        for n, i in enumerate(indices):
+            u_field = self.data[ukey][i]
+            v_field = self.data[vkey][i]
+            u_face = (u_field.values if 'nMesh2d_face' in u_field.dims
+                      else self.edges_to_faces(u_field.values))
+            v_face = (v_field.values if 'nMesh2d_face' in v_field.dims
+                      else self.edges_to_faces(v_field.values))
+            mass = self.calc_density(int(i)) * volume
+            m_rel = np.nansum(u_face * arm * mass)
+            m_omega = np.nansum(self.rotrate * arm**2 * mass)
+            index[n] = m_rel / m_omega
+            ke[n] = np.nansum(0.5 * (u_face**2 + v_face**2) * mass)
+
+        return self.time[indices], index, ke
+
 
 # %%
 def zmzw_and_am(plobject, meaning=True, trange=(0, None), time_slice=-1,
@@ -482,5 +532,120 @@ def atmosphere_state(plobject, meaning=True, trange=(0, None), time_slice=-1,
         plt.close()
     else:
         plt.show()
+
+# %%
+def spinup_index(rundir, nsegments=None, steps_per_day=16812,
+                 solar_day=1.00872e7, plot=True, save=False,
+                 saveformat='png', savepath=savedir, savename=None):
+
+    """ Input: top-level directory of a chained run, e.g. forced_haus, whose
+        segment subdirectories are named <candidate>_<start day>_<end day>
+        and each hold one lfric_diag.nc
+        Output: two-panel figure after Lee et al. (2007), Fig. 3: globally
+        integrated superrotation index S above global total kinetic energy,
+        against time in Venus solar days
+
+        nsegments (default None) is the number of segments to read, counted
+        from the first. If None, every segment whose end-of-segment
+        checkpoint exists is read. The checkpoint is written only when a
+        segment finishes, so this skips a segment whose lfric_diag.nc is
+        still being written. Give nsegments explicitly if checkpoints have
+        been deleted.
+        steps_per_day (default 16812, a Venus solar day at dt = 600 s) gives
+        the step number of each segment's end checkpoint
+        solar_day (default 1.00872e7 s) converts model time to Venus days
+
+        Each segment is read on its own, so no file is held open beside the
+        others and the mesh variables are never concatenated along time.
+        The model time axis runs from the start of the chain, so segment
+        times are used as they are; a time that fails to increase across
+        segments raises an error.
+
+        Returns (time in Venus days, S, KE in J). """
+
+    pattern = re.compile(r'^(.+)_(\d+)_(\d+)$')
+    segments = []
+    for name in os.listdir(rundir):
+        match = pattern.match(name)
+        path = os.path.join(rundir, name)
+        if match and os.path.isfile(os.path.join(path, 'lfric_diag.nc')):
+            segments.append((int(match.group(2)), int(match.group(3)), path))
+    segments.sort()
+    if not segments:
+        raise FileNotFoundError(f'No segment directories in {rundir}')
+
+    if nsegments is None:
+        complete = []
+        for start, end, path in segments:
+            ckpt = glob.glob(os.path.join(path, f'*_{end * steps_per_day:010d}.nc'))
+            if not ckpt:
+                break
+            complete.append((start, end, path))
+        if len(complete) < len(segments):
+            print(f'Reading {len(complete)} complete segments of '
+                  f'{len(segments)}; {segments[len(complete)][2]} has no '
+                  f'end checkpoint')
+        segments = complete
+    else:
+        segments = segments[:nsegments]
+    if not segments:
+        raise FileNotFoundError(f'No complete segments in {rundir}')
+
+    run = os.path.basename(os.path.normpath(rundir))
+    times, index, ke = [], [], []
+    plobject = None
+    for start, end, path in segments:
+        print(f'Reading {path}')
+        if plobject is None:
+            plobject = LFRicPlanet(lfricdict, 'lfric', run)
+            plobject.load_file(os.path.join(path, 'lfric_diag.nc'))
+            plobject.set_resolution()
+        else:
+            plobject.data = xr.open_dataset(os.path.join(path, 'lfric_diag.nc'),
+                                            decode_cf=False)
+            plobject.time = plobject.data['time'].values
+        t, s, k = plobject.calc_superrotation_ke()
+        plobject.close()
+        if times and t[0] <= times[-1][-1]:
+            raise ValueError(f'Time in {path} does not follow on from the '
+                             f'previous segment')
+        times.append(t)
+        index.append(s)
+        ke.append(k)
+
+    days = np.concatenate(times) / solar_day
+    index = np.concatenate(index)
+    ke = np.concatenate(ke)
+
+    if plot is not True:
+        return days, index, ke
+
+    # Two panels sharing the time axis rather than one panel with two
+    # y-scales, so neither curve's apparent slope depends on axis limits.
+    fig, ax = plt.subplots(2, 1, figsize=(8, 7), sharex=True,
+                           layout='constrained')
+    ax[0].plot(days, index, color='k', linewidth=2)
+    ax[0].set_title('Globally integrated superrotation index')
+    ax[0].set_ylabel('S')
+    ax[1].plot(days, ke, color='k', linewidth=2)
+    ax[1].set_title('Global total kinetic energy')
+    ax[1].set_ylabel('KE [J]')
+    ax[1].set_xlabel('Time [Venus solar days]')
+    for a in ax:
+        a.grid(alpha=0.5)
+        a.set_xlim(0, days[-1])
+    fig.suptitle(f'{plobject.name}, {run}')
+
+    if save is True:
+        if savename is None:
+            savename = f'spinup_{run}.{saveformat}'
+        os.makedirs(savepath, exist_ok=True)
+        plt.savefig(os.path.join(savepath, savename), format=saveformat,
+                    bbox_inches='tight')
+        plt.close()
+    else:
+        plt.show()
+
+    return days, index, ke
 
 # %%
