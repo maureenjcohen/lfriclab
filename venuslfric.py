@@ -423,8 +423,10 @@ def atmosphere_state(plobject, meaning=True, trange=(0, None), time_slice=-1,
         savepath (default SAVEDIR from .env) is the directory the figure is
         written to, created if missing
 
-        The streamfunction is psi = 2*pi*r*cos(lat) * integral from z to the
-        model top of [rho*v] dz, with r = radius + z. Positive values
+        The streamfunction is psi = 2*pi*cos(lat) * integral from z to the
+        model top of r*[rho*v] dz, with r = radius + z inside the integral,
+        since in the deep atmosphere the circumference of a latitude circle,
+        2*pi*r*cos(lat), grows with height. Positive values
         circulate clockwise in the latitude-height plane, as in the northern
         Hadley cell. """
 
@@ -472,12 +474,12 @@ def atmosphere_state(plobject, meaning=True, trange=(0, None), time_slice=-1,
     temp_profile = temp_sum / nt
     stab_profile = stab_sum / nt
 
-    # Integrate rho*v downward from the model top onto full levels.
-    column = np.cumsum(zm_rhov[::-1] * plobject.dz, axis=0)[::-1]
+    # Integrate r*rho*v downward from the model top onto full levels.
+    radius = plobject.radius + plobject.z_half
+    column = np.cumsum((radius[:, None] * zm_rhov)[::-1] * plobject.dz,
+                       axis=0)[::-1]
     column = np.concatenate([column, np.zeros((1, lats.size))], axis=0)
-    radius = plobject.radius + plobject.z_full
-    psi = 2 * np.pi * radius[:, None] * np.cos(np.deg2rad(lats))[None, :] \
-        * column
+    psi = 2 * np.pi * np.cos(np.deg2rad(lats))[None, :] * column
 
     if plot is not True:
         return lats, zmzw, psi, temp_profile, stab_profile
@@ -620,8 +622,8 @@ def spinup_index(rundir, nsegments=None, steps_per_day=16812,
         against time in Venus solar days
 
         nsegments (default None) and steps_per_day (default 16812) select
-        the segments to read, as in find_segments, which also stops at a gap
-        in the chain
+        the segments to read, as in find_segments, which also raises an
+        error at a gap in the chain
         solar_day (default 1.00872e7 s) converts model time to Venus days
 
         Each segment is read on its own, so no file is held open beside the
@@ -732,8 +734,11 @@ def zonal_wind_history(rundir, heights=(5, 15, 25, 35, 45, 55, 65, 75),
             levels = np.array([np.argmin(np.abs(plobject.heights - h))
                                for h in heights])
             inband = np.abs(plobject.face_lats) <= latband
-            weights = np.where(inband, plobject.areas, 0.0)
-            weights = weights / weights.sum()
+            if not np.any(inband):
+                raise ValueError(f'No mesh face lies within {latband} deg of '
+                                 f'the equator; the nearest is at '
+                                 f'{np.abs(plobject.face_lats).min():.2f} deg')
+            weights = plobject.areas[inband] / plobject.areas[inband].sum()
         else:
             plobject.data = xr.open_dataset(os.path.join(path, 'lfric_diag.nc'),
                                             decode_cf=False)
@@ -749,7 +754,7 @@ def zonal_wind_history(rundir, heights=(5, 15, 25, 35, 45, 55, 65, 75),
             raise ValueError(f'Time in {path} does not follow on from the '
                              f'previous segment')
         times.append(t)
-        winds.append(np.sum(u_sel * weights, axis=-1))
+        winds.append(np.sum(u_sel[..., inband] * weights, axis=-1))
 
     days = np.concatenate(times) / solar_day
     wind = np.concatenate(winds)
@@ -773,8 +778,15 @@ def zonal_wind_history(rundir, heights=(5, 15, 25, 35, 45, 55, 65, 75),
         a.set_xlim(0, days[-1])
     for a in ax.flat[used.size:]:
         a.set_visible(False)
-    for a in ax[-1]:
-        a.set_xlabel('Time [Venus solar days]')
+    # The lowest visible panel of each column carries the time axis, which
+    # is not the bottom row when the panel count is odd.
+    for col in range(ncol):
+        visible = [row for row in range(nrow)
+                   if row * ncol + col < used.size]
+        if visible:
+            a = ax[visible[-1], col]
+            a.tick_params(labelbottom=True)
+            a.set_xlabel('Time [Venus solar days]')
     fig.suptitle(f'{plobject.name}, {run}: zonal mean zonal wind, '
                  f'area mean over {latband:.0f}S to {latband:.0f}N')
 
