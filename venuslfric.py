@@ -256,8 +256,9 @@ class LFRicPlanet:
 
         M_r = integral of u * r * cos(lat) dm, with r = radius + z for the
         deep atmosphere the configuration uses (shallow=.false.) and
-        dm = rho * area * dz. The planetary term is excluded, so the result is
-        the wind contribution alone and starts near zero for a run from rest.
+        dm = rho * area * (r/radius)**2 * dz. The planetary term is excluded,
+        so the result is the wind contribution alone and starts near zero for
+        a run from rest.
 
         Returns (time in seconds, M_r in kg m2 s-1). """
         if not hasattr(self, 'areas'):
@@ -271,8 +272,11 @@ class LFRicPlanet:
         radius = self.radius + self.z_half
         coslat = np.cos(np.deg2rad(self.face_lats))
         # Moment arm r*cos(lat) and the cell volume element, both fixed in time.
+        # Cell areas are on the surface sphere; deep-atmosphere cells widen
+        # with height as (r/radius)**2.
         arm = radius[:, None] * coslat[None, :]
-        volume = self.areas[None, :] * self.dz
+        volume = (self.areas[None, :] * (radius[:, None] / self.radius)**2
+                  * self.dz)
 
         am = np.zeros(indices.size)
         for n, i in enumerate(indices):
@@ -295,10 +299,12 @@ class LFRicPlanet:
         M_omega = integral of omega * r**2 * cos(lat)**2 dm, the angular
                   momentum of the same atmosphere at rest relative to the
                   surface
-        with r = radius + z and dm = rho * area * dz. S = 0 for an atmosphere
-        at rest; the total angular momentum is (1 + S) times M_omega, so
-        1 + S is also the total angular momentum normalised to its value at
-        rest, as in Lebonnois et al. (2010), Fig. 1. Retrograde omega and
+        with r = radius + z and dm = rho * area * (r/radius)**2 * dz. S = 0
+        for an atmosphere at rest; the total angular momentum is (1 + S)
+        times M_omega. For a run from rest, 1 + S matches the total angular
+        momentum normalised to its initial value, as in Lebonnois et al.
+        (2010), Fig. 1, only while the mass distribution, and so M_omega,
+        stays as it was at the start. Retrograde omega and
         retrograde wind are both negative, so superrotation gives S > 0.
 
         KE = integral of 0.5 * (u**2 + v**2) dm; vertical wind is omitted.
@@ -315,7 +321,10 @@ class LFRicPlanet:
         radius = self.radius + self.z_half
         coslat = np.cos(np.deg2rad(self.face_lats))
         arm = radius[:, None] * coslat[None, :]
-        volume = self.areas[None, :] * self.dz
+        # Cell areas are on the surface sphere; deep-atmosphere cells widen
+        # with height as (r/radius)**2.
+        volume = (self.areas[None, :] * (radius[:, None] / self.radius)**2
+                  * self.dz)
 
         index = np.zeros(indices.size)
         ke = np.zeros(indices.size)
@@ -546,11 +555,12 @@ def spinup_index(rundir, nsegments=None, steps_per_day=16812,
         against time in Venus solar days
 
         nsegments (default None) is the number of segments to read, counted
-        from the first. If None, every segment whose end-of-segment
-        checkpoint exists is read. The checkpoint is written only when a
-        segment finishes, so this skips a segment whose lfric_diag.nc is
-        still being written. Give nsegments explicitly if checkpoints have
-        been deleted.
+        from the first, between 1 and the number of segment directories.
+        If None, every segment whose end-of-segment checkpoint exists and is
+        not empty is read, stopping at the first segment without one. The
+        checkpoint is written only when a segment finishes, so this skips a
+        segment whose lfric_diag.nc is still being written. Give nsegments
+        explicitly if checkpoints have been deleted.
         steps_per_day (default 16812, a Venus solar day at dt = 600 s) gives
         the step number of each segment's end checkpoint
         solar_day (default 1.00872e7 s) converts model time to Venus days
@@ -559,7 +569,8 @@ def spinup_index(rundir, nsegments=None, steps_per_day=16812,
         others and the mesh variables are never concatenated along time.
         The model time axis runs from the start of the chain, so segment
         times are used as they are; a time that fails to increase across
-        segments raises an error.
+        segments, or a segment that does not start where the previous one
+        ended, raises an error.
 
         Returns (time in Venus days, S, KE in J). """
 
@@ -577,19 +588,31 @@ def spinup_index(rundir, nsegments=None, steps_per_day=16812,
     if nsegments is None:
         complete = []
         for start, end, path in segments:
-            ckpt = glob.glob(os.path.join(path, f'*_{end * steps_per_day:010d}.nc'))
+            ckpt = [f for f in glob.glob(os.path.join(
+                        path, f'*_{end * steps_per_day:010d}.nc'))
+                    if os.path.getsize(f) > 0]
             if not ckpt:
                 break
             complete.append((start, end, path))
         if len(complete) < len(segments):
             print(f'Reading {len(complete)} complete segments of '
                   f'{len(segments)}; {segments[len(complete)][2]} has no '
-                  f'end checkpoint')
+                  f'non-empty end checkpoint')
         segments = complete
     else:
+        if not 1 <= nsegments <= len(segments):
+            raise ValueError(f'nsegments must be between 1 and '
+                             f'{len(segments)}, the number of segments '
+                             f'in {rundir}')
         segments = segments[:nsegments]
     if not segments:
         raise FileNotFoundError(f'No complete segments in {rundir}')
+    for previous, current in zip(segments[:-1], segments[1:]):
+        if current[0] != previous[1]:
+            raise ValueError(f'Gap in the chain: {previous[2]} ends at day '
+                             f'{previous[1]} but the next segment with '
+                             f'lfric_diag.nc, {current[2]}, starts at day '
+                             f'{current[0]}')
 
     run = os.path.basename(os.path.normpath(rundir))
     times, index, ke = [], [], []
@@ -620,8 +643,8 @@ def spinup_index(rundir, nsegments=None, steps_per_day=16812,
     if plot is not True:
         return days, index, ke
 
-    # Two panels sharing the time axis rather than one panel with two
-    # y-scales, so neither curve's apparent slope depends on axis limits.
+    # Each quantity has its own panel and y-axis on a shared time axis, so
+    # neither curve's apparent slope depends on the other's scale.
     fig, ax = plt.subplots(2, 1, figsize=(8, 7), sharex=True,
                            layout='constrained')
     ax[0].plot(days, index, color='k', linewidth=2)
