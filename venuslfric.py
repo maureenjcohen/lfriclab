@@ -775,7 +775,7 @@ def zonal_wind_history(rundir, heights=(5, 15, 25, 35, 45, 55, 65, 75),
         a.set_title(f'{used[j]:.2f} km')
         a.set_ylabel('u [m/s]')
         a.grid(alpha=0.5)
-        a.set_xlim(0, days[-1])
+        a.set_xlim(days[0], days[-1])
     for a in ax.flat[used.size:]:
         a.set_visible(False)
     # The lowest visible panel of each column carries the time axis, which
